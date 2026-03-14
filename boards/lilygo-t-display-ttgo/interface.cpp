@@ -113,62 +113,8 @@ void InputHandler(void) {
 }
 
 void powerOff() {
-    // Tampilkan menu pilihan
-    tft.fillScreen(bruceConfig.bgColor);
-    tft.setTextColor(TFT_WHITE, bruceConfig.bgColor);
-    tft.setTextSize(1);
-    
-    tft.drawString("Pilih mode mati:", 20, 40);
-    tft.drawString("1. Tekan UP = Sleep (bisa bangun)", 20, 70);
-    tft.drawString("2. Tekan DW = Mati Total", 20, 100);
-    tft.drawString("3. Tekan SELECT = Batal", 20, 130);
-    
-    // Tunggu input user (sederhana, loop manual)
-    unsigned long startWait = millis();
-    bool menuActive = true;
-    
-    while (menuActive && (millis() - startWait < 10000)) { // timeout 10 detik
-        if (prvPress) { // UP_BTN = Sleep biasa
-            prvPress = false;
-            // Mode sleep biasa (bisa bangun)
-            tft.fillScreen(bruceConfig.bgColor);
-            tft.drawString("Mode Sleep...", 20, 60);
-            delay(1000);
-            
-            digitalWrite(TFT_BL, LOW);
-            tft.writecommand(0x10);
-            esp_sleep_enable_ext0_wakeup((gpio_num_t)DW_BTN, BTN_ACT);
-            esp_deep_sleep_start();
-            return;
-        }
-        else if (nxtPress) { // DW_BTN = Mati total
-            nxtPress = false;
-            // Mode mati total
-            tft.fillScreen(bruceConfig.bgColor);
-            tft.drawString("Mati total...", 20, 60);
-            tft.drawString("Tekan RST untuk hidup", 20, 90);
-            delay(2000);
-            
-            digitalWrite(TFT_BL, LOW);
-            tft.writecommand(0x10);
-            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-            esp_deep_sleep_start();
-            return;
-        }
-        else if (slPress) { // SELECT = Batal
-            slPress = false;
-            tft.fillScreen(bruceConfig.bgColor);
-            tft.drawString("Dibatalkan", 20, 60);
-            delay(1000);
-            return; // Kembali ke menu utama
-        }
-        
-        delay(50); // kecilin CPU usage
-    }
-    
-    // Kalau timeout, default ke sleep biasa
     digitalWrite(TFT_BL, LOW);
     tft.writecommand(0x10);
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)DW_BTN, BTN_ACT);
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_deep_sleep_start();
 }
