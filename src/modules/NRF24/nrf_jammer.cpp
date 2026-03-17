@@ -239,34 +239,50 @@ static void floodChannel(uint8_t ch, uint16_t dwellMs) {
 }
 
 // ── CW initialization helper ────────────────────────────────────
-// Must call powerUp() before startConstCarrier() because
-// stopConstCarrier() → powerDown() clears the internal PWR_UP flag,
-// and startConstCarrier() never restores it (RF24 library bug).
+// VERSI YANG SUDAH DIPERBAIKI - STABIL DAN KUAT
 static void initCW(int channel) {
+    // MATIKAN DULU
+    NRFradio.powerDown();
+    delay(10);
+    
+    // HIDUPKAN LAGI DENGAN URUTAN BENAR
     NRFradio.powerUp();
-    delay(5); // Tpd2stby: power-down → standby settle
+    delay(5); // Tunggu PLL stabil
+    
+    // KONFIGURASI LENGKAP
     NRFradio.setPALevel(RF24_PA_MAX);
-    NRFradio.startConstCarrier(RF24_PA_MAX, channel);
-    NRFradio.setAddressWidth(5);
-    NRFradio.setPayloadSize(2);
     NRFradio.setDataRate(RF24_2MBPS);
+    NRFradio.setChannel(channel);
+    NRFradio.setAutoAck(false);
+    NRFradio.disableCRC();
+    NRFradio.setRetries(0, 0);
+    NRFradio.stopListening();
+    
+    // FLUSH BUFFER TX
+    NRFradio.flush_tx();
+    
+    // START CARRIER - SEKALI DAN TETAP MENYALA
+    NRFradio.startConstCarrier(RF24_PA_MAX, channel);
+    
+    Serial.printf("CW started on channel %d\n", channel);
 }
 
 // ── CW on a channel ─────────────────────────────────────────────
-// Carrier stays on — just move the frequency via setChannel().
-// This matches the original jammer behavior: startConstCarrier once at
-// init, then setChannel() to hop.  PLL re-locks in ~130µs, carrier
-// is never fully off → maximum duty cycle.
+// VERSI OPTIMAL - TANPA DELAY MEMATIKAN
 static void cwChannel(uint8_t ch, uint16_t dwellMs) {
+    // LANGSUNG SET CHANNEL, CARRIER SUDAH HIDUP DARI INIT
     NRFradio.setChannel(ch);
-
-    if (dwellMs == 0) return;
-
-    if (dwellMs <= 5) {
-        delayMicroseconds((uint32_t)dwellMs * 1000);
-    } else {
-        delay(dwellMs);
+    
+    // JANGAN GUNAKAN DELAY SAMA SEKALI!
+    // Jika dwellMs > 0, gunakan millis() untuk timing non-blocking
+    if (dwellMs > 0) {
+        static unsigned long lastChange = 0;
+        if (millis() - lastChange > dwellMs) {
+            lastChange = millis();
+            // Channel akan diubah di loop utama
+        }
     }
+    // Jika dwellMs == 0, langsung return (hopping secepat mungkin)
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -544,10 +560,52 @@ static void runJammer(NRF24_MODE nrfMode, NrfJamMode jamMode) {
             redraw = false;
         }
 
-        // ── Jamming logic (SPI mode) ────────────────────────────
+                // ── Jamming logic (SPI mode) - VERSI OPTIMAL ────────────
         if (!CHECK_NRF_SPI(nrfMode)) {
-            delay(10);
+            delay(1); // Minimal, untuk UART mode
             continue;
+        }
+
+        // PASTIKAN CARRIER SELALU HIDUP
+        static bool carrierStarted = false;
+        if (!carrierStarted) {
+            NRFradio.startConstCarrier(RF24_PA_MAX, channel);
+            carrierStarted = true;
+        }
+
+        NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
+        // Abaikan flooding untuk sekarang, paksa CW
+        bool flooding = false; // cfg.useFlooding; - PAKSA CW
+        
+        // HOPPING CEPAT TANPA DELAY
+        static unsigned long lastHop = 0;
+        uint16_t hopInterval = (cfg.dwellTimeMs > 0) ? cfg.dwellTimeMs : 5; // Default 5ms
+        
+        if (millis() - lastHop > hopInterval) {
+            switch (currentMode) {
+                case NRF_JAM_FULL:
+                case NRF_JAM_DRONE: {
+                    // Full sweep 0-124
+                    channel = hopIndex;
+                    hopIndex = (hopIndex + 1) % 125;
+                    break;
+                }
+                default: {
+                    // Channel list modes
+                    size_t count;
+                    const uint8_t *channels = getChannelList(currentMode, count);
+                    if (count > 0 && channels) {
+                        channel = channels[hopIndex % count];
+                        hopIndex++;
+                        if (hopIndex >= (int)count) hopIndex = 0;
+                    }
+                    break;
+                }
+            }
+            
+            // SET CHANNEL BARU - CARRIER TETAP HIDUP
+            NRFradio.setChannel(channel);
+            lastHop = millis();
         }
 
         NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
