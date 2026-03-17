@@ -18,6 +18,9 @@
 #define __NRF_JAMMER_H
 
 #include "modules/NRF24/nrf_common.h"
+#include "nrf_pin_config.h"  // <-- TAMBAHKAN BARIS INI
+
+// ... (sisa file tetap sama)
 
 // ── Jamming Mode Presets ────────────────────────────────────────
 // Cycleable preset modes only. CH Jammer and CH Hopper are
