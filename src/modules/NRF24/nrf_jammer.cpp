@@ -239,17 +239,14 @@ static void floodChannel(uint8_t ch, uint16_t dwellMs) {
 }
 
 // ── CW initialization helper ────────────────────────────────────
-// VERSI YANG SUDAH DIPERBAIKI - STABIL DAN KUAT
+// Must call powerUp() before startConstCarrier() because
+// stopConstCarrier() → powerDown() clears the internal PWR_UP flag,
+// and startConstCarrier() never restores it (RF24 library bug).
 static void initCW(int channel) {
-    // MATIKAN DULU
     NRFradio.powerDown();
     delay(10);
-    
-    // HIDUPKAN LAGI DENGAN URUTAN BENAR
     NRFradio.powerUp();
-    delay(5); // Tunggu PLL stabil
-    
-    // KONFIGURASI LENGKAP
+    delay(5); // Tpd2stby: power-down → standby settle
     NRFradio.setPALevel(RF24_PA_MAX);
     NRFradio.setDataRate(RF24_2MBPS);
     NRFradio.setChannel(channel);
@@ -257,32 +254,24 @@ static void initCW(int channel) {
     NRFradio.disableCRC();
     NRFradio.setRetries(0, 0);
     NRFradio.stopListening();
-    
-    // FLUSH BUFFER TX
     NRFradio.flush_tx();
-    
-    // START CARRIER - SEKALI DAN TETAP MENYALA
     NRFradio.startConstCarrier(RF24_PA_MAX, channel);
     
     Serial.printf("CW started on channel %d\n", channel);
 }
 
 // ── CW on a channel ─────────────────────────────────────────────
-// VERSI OPTIMAL - TANPA DELAY MEMATIKAN
+// Carrier stays on — just move the frequency via setChannel().
+// This matches the original jammer behavior: startConstCarrier once at
+// init, then setChannel() to hop.  PLL re-locks in ~130µs, carrier
+// is never fully off → maximum duty cycle.
 static void cwChannel(uint8_t ch, uint16_t dwellMs) {
-    // LANGSUNG SET CHANNEL, CARRIER SUDAH HIDUP DARI INIT
     NRFradio.setChannel(ch);
     
-    // JANGAN GUNAKAN DELAY SAMA SEKALI!
-    // Jika dwellMs > 0, gunakan millis() untuk timing non-blocking
+    // No delay needed - just set channel
     if (dwellMs > 0) {
-        static unsigned long lastChange = 0;
-        if (millis() - lastChange > dwellMs) {
-            lastChange = millis();
-            // Channel akan diubah di loop utama
-        }
+        // For compatibility, but we'll use non-blocking timing in main loop
     }
-    // Jika dwellMs == 0, langsung return (hopping secepat mungkin)
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -448,14 +437,8 @@ static void runJammer(NRF24_MODE nrfMode, NrfJamMode jamMode) {
     int hopIndex = 0;
 
     if (CHECK_NRF_SPI(nrfMode)) {
-        NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
-        bool flooding = cfg.useFlooding;
-
-        if (flooding) {
-            applyJamConfig(cfg, true);
-        } else {
-            initCW(channel);
-        }
+        // Initialize with CW (constant carrier) for stability
+        initCW(channel);
         NRFSPI = 1;
     }
 
@@ -468,6 +451,10 @@ static void runJammer(NRF24_MODE nrfMode, NrfJamMode jamMode) {
 
     bool running = true;
     bool redraw = false;
+    
+    // Get current config (declared once)
+    NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
+    bool flooding = false; // Force CW for maximum stability and power
 
     while (running) {
         // ── Check for exit ──────────────────────────────────────
@@ -499,36 +486,23 @@ static void runJammer(NRF24_MODE nrfMode, NrfJamMode jamMode) {
             if (CHECK_NRF_SPI(nrfMode)) NRFradio.stopConstCarrier();
             editModeConfig(currentMode);
 
-            // Re-apply config after edit — must use initCW() because
-            // stopConstCarrier() → powerDown() clears internal PWR_UP,
-            // and bare startConstCarrier() never restores it.
+            // Re-apply config after edit
             if (CHECK_NRF_SPI(nrfMode)) {
-                NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
-                if (cfg.useFlooding) {
-                    applyJamConfig(cfg, true);
-                } else {
-                    initCW(channel);
-                }
+                initCW(channel);
+                // Update cfg reference after potential config changes
+                cfg = jamConfigs[(uint8_t)currentMode];
             }
             redraw = true;
         }
 
         // ── Mode cycling: Next/Prev ─────────────────────────────
         if (check(NextPress)) {
-            NrfJamMode prevMode = currentMode;
             currentMode = (NrfJamMode)(((uint8_t)currentMode + 1) % NRF_JAM_MODE_COUNT);
             hopIndex = 0;
             if (CHECK_NRF_SPI(nrfMode)) {
-                NrfJamConfig &prevCfg = jamConfigs[(uint8_t)prevMode];
-                NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
-                if (prevCfg.useFlooding != cfg.useFlooding) {
-                    NRFradio.stopConstCarrier();
-                    if (cfg.useFlooding) {
-                        applyJamConfig(cfg, true);
-                    } else {
-                        initCW(channel);
-                    }
-                }
+                initCW(channel);
+                // Update cfg reference
+                cfg = jamConfigs[(uint8_t)currentMode];
             }
             if (CHECK_NRF_UART(nrfMode) || CHECK_NRF_BOTH(nrfMode)) {
                 NRFSerial.println(MODE_INFO[(uint8_t)currentMode].shortName);
@@ -536,50 +510,31 @@ static void runJammer(NRF24_MODE nrfMode, NrfJamMode jamMode) {
             redraw = true;
         }
         if (check(PrevPress)) {
-            NrfJamMode prevMode = currentMode;
             currentMode = (NrfJamMode)(((uint8_t)currentMode + NRF_JAM_MODE_COUNT - 1) % NRF_JAM_MODE_COUNT);
             hopIndex = 0;
             if (CHECK_NRF_SPI(nrfMode)) {
-                NrfJamConfig &prevCfg = jamConfigs[(uint8_t)prevMode];
-                NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
-                if (prevCfg.useFlooding != cfg.useFlooding) {
-                    NRFradio.stopConstCarrier();
-                    if (cfg.useFlooding) {
-                        applyJamConfig(cfg, true);
-                    } else {
-                        initCW(channel);
-                    }
-                }
+                initCW(channel);
+                // Update cfg reference
+                cfg = jamConfigs[(uint8_t)currentMode];
             }
             redraw = true;
         }
 
-        // ── Redraw on state changes only (no periodic redraw) ───
+        // ── Redraw on state changes only ────────────────────────
         if (redraw) {
             drawJammerStatus(currentMode, channel, NRFOnline, true);
             redraw = false;
         }
 
-                // ── Jamming logic (SPI mode) - VERSI OPTIMAL ────────────
+        // ── Jamming logic (SPI mode) ────────────────────────────
         if (!CHECK_NRF_SPI(nrfMode)) {
-            delay(1); // Minimal, untuk UART mode
+            delay(10);
             continue;
         }
 
-        // PASTIKAN CARRIER SELALU HIDUP
-        static bool carrierStarted = false;
-        if (!carrierStarted) {
-            NRFradio.startConstCarrier(RF24_PA_MAX, channel);
-            carrierStarted = true;
-        }
-
-        NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
-        // Abaikan flooding untuk sekarang, paksa CW
-        bool flooding = false; // cfg.useFlooding; - PAKSA CW
-        
-        // HOPPING CEPAT TANPA DELAY
+        // FAST HOPPING WITHOUT DELAYS
         static unsigned long lastHop = 0;
-        uint16_t hopInterval = (cfg.dwellTimeMs > 0) ? cfg.dwellTimeMs : 5; // Default 5ms
+        uint16_t hopInterval = 5; // 5ms per channel (200 hops/second)
         
         if (millis() - lastHop > hopInterval) {
             switch (currentMode) {
@@ -591,7 +546,7 @@ static void runJammer(NRF24_MODE nrfMode, NrfJamMode jamMode) {
                     break;
                 }
                 default: {
-                    // Channel list modes
+                    // All preset channel list modes: sequential hopping
                     size_t count;
                     const uint8_t *channels = getChannelList(currentMode, count);
                     if (count > 0 && channels) {
@@ -603,43 +558,9 @@ static void runJammer(NRF24_MODE nrfMode, NrfJamMode jamMode) {
                 }
             }
             
-            // SET CHANNEL BARU - CARRIER TETAP HIDUP
+            // Set new channel - carrier stays on automatically
             NRFradio.setChannel(channel);
             lastHop = millis();
-        }
-
-        NrfJamConfig &cfg = jamConfigs[(uint8_t)currentMode];
-        bool flooding = cfg.useFlooding;
-        uint16_t dwellMs = cfg.dwellTimeMs;
-
-        switch (currentMode) {
-            case NRF_JAM_FULL:
-            case NRF_JAM_DRONE: {
-                // Full sweep 0-124 (like original)
-                if (flooding) floodChannel(hopIndex, dwellMs);
-                else cwChannel(hopIndex, dwellMs);
-                channel = hopIndex;
-                hopIndex = (hopIndex + 1) % 125;
-                break;
-            }
-
-            default: {
-                // All preset channel list modes: sequential hopping
-                // (BLE, BLE_ADV, WiFi, Bluetooth, USB, Video, RC, Zigbee)
-                size_t count;
-                const uint8_t *channels = getChannelList(currentMode, count);
-                if (count > 0 && channels) {
-                    uint8_t ch = channels[hopIndex % count];
-                    if (flooding) floodChannel(ch, dwellMs);
-                    else cwChannel(ch, dwellMs);
-                    channel = ch;
-                    hopIndex++;
-                    if (hopIndex >= (int)count) hopIndex = 0;
-                } else {
-                    delay(1);
-                }
-                break;
-            }
         }
     }
 
@@ -790,212 +711,4 @@ void nrf_channel_jammer() {
             tft.setTextColor(TFT_DARKGREY, bruceConfig.bgColor);
             tft.drawCentreString("[ESC]Exit [<>]CH [OK]Pause", tftWidth / 2, footerY, 1);
 
-            if (CHECK_NRF_UART(mode) || CHECK_NRF_BOTH(mode)) { NRFSerial.println("CH_" + String(channel)); }
-            redraw = false;
-        }
-
-        // SEL: pause/resume
-        if (check(SelPress)) {
-            paused = !paused;
-            if (CHECK_NRF_SPI(mode)) {
-                if (paused) {
-                    NRFradio.stopConstCarrier();
-                } else {
-                    initCW(channel);
-                }
-            }
-            redraw = true;
-        }
-
-        if (check(NextPress)) {
-            channel++;
-            if (channel > 125) channel = 0;
-            if (CHECK_NRF_SPI(mode) && !paused) {
-                NRFradio.setChannel(channel);
-                NRFradio.startConstCarrier(RF24_PA_MAX, channel);
-            }
-            redraw = true;
-        }
-        if (check(PrevPress)) {
-            channel--;
-            if (channel < 0) channel = 125;
-            if (CHECK_NRF_SPI(mode) && !paused) {
-                NRFradio.setChannel(channel);
-                NRFradio.startConstCarrier(RF24_PA_MAX, channel);
-            }
-            redraw = true;
-        }
-    }
-
-    if (CHECK_NRF_SPI(mode)) NRFradio.stopConstCarrier();
-    if (CHECK_NRF_UART(mode) || CHECK_NRF_BOTH(mode)) NRFSerial.println("OFF");
-}
-
-void nrf_channel_hopper() {
-    loadJamConfigs();
-
-    NRF24_MODE nrfMode = nrf_setMode();
-    if (returnToMenu || nrfMode == NRF_MODE_DISABLED) return;
-
-    if (!nrf_start(nrfMode)) {
-        displayError("NRF24 not found");
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-        return;
-    }
-
-    // ── Hopper config UI ────────────────────────────────────────
-    NrfHopperConfig hopCfg = {0, 80, 2};
-    int menuIndex = 0;
-    bool editMode = false;
-    bool redraw = true;
-
-    vTaskDelay(350 / portTICK_PERIOD_MS);
-
-    if (CHECK_NRF_UART(nrfMode) || CHECK_NRF_BOTH(nrfMode)) {
-        NRFSerial.println("RADIOS");
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-    }
-
-    while (true) {
-        if (check(EscPress)) return;
-
-        if (redraw) {
-            drawMainBorderWithTitle("HOPPER CONFIG");
-            tft.setTextSize(FP);
-            tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
-
-            int y = BORDER_PAD_Y + FM * LH + 4;
-            int lineH = max(16, tftHeight / 8);
-
-            const char *labels[] = {"Start CH", "Stop CH", "Step", "Start Jammer", "Exit"};
-            int values[] = {hopCfg.startChannel, hopCfg.stopChannel, hopCfg.stepSize, -1, -1};
-
-            for (int i = 0; i < 5; i++) {
-                int itemY = y + i * lineH;
-                uint16_t fg = (i == menuIndex) ? bruceConfig.bgColor : bruceConfig.priColor;
-                uint16_t bg = (i == menuIndex) ? bruceConfig.priColor : bruceConfig.bgColor;
-
-                tft.fillRect(7, itemY, tftWidth - 14, lineH - 2, bg);
-                tft.setTextColor(fg, bg);
-
-                char line[32];
-                if (values[i] >= 0) {
-                    int freq = 2400 + values[i];
-                    snprintf(line, sizeof(line), "%s: %d (%dMHz)", labels[i], values[i], freq);
-                } else {
-                    snprintf(line, sizeof(line), "%s", labels[i]);
-                }
-                tft.drawString(line, 12, itemY + 2, 1);
-
-                if (editMode && i == menuIndex && i < 3) {
-                    tft.setTextColor(TFT_YELLOW, bg);
-                    tft.drawRightString("<>", tftWidth - 12, itemY + 2, 1);
-                }
-            }
-            redraw = false;
-        }
-
-        if (check(NextPress)) {
-            if (editMode) {
-                if (menuIndex == 0) hopCfg.startChannel = (hopCfg.startChannel + 1) % 126;
-                if (menuIndex == 1) hopCfg.stopChannel = (hopCfg.stopChannel + 1) % 126;
-                if (menuIndex == 2) hopCfg.stepSize = (hopCfg.stepSize % 10) + 1;
-            } else {
-                menuIndex = (menuIndex + 1) % 5;
-            }
-            redraw = true;
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-        }
-
-        if (check(PrevPress)) {
-            if (editMode) {
-                if (menuIndex == 0) hopCfg.startChannel = (hopCfg.startChannel + 125) % 126;
-                if (menuIndex == 1) hopCfg.stopChannel = (hopCfg.stopChannel + 125) % 126;
-                if (menuIndex == 2) hopCfg.stepSize = ((hopCfg.stepSize - 2 + 10) % 10) + 1;
-            } else {
-                menuIndex = (menuIndex + 4) % 5;
-            }
-            redraw = true;
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-        }
-
-        if (check(SelPress)) {
-            if (menuIndex == 3) {
-                // Start hopper jammer inline
-                if (CHECK_NRF_UART(nrfMode) || CHECK_NRF_BOTH(nrfMode)) {
-                    NRFSerial.println(
-                        "HOPPER_" + String(hopCfg.startChannel) + "_" + String(hopCfg.stopChannel) + "_" +
-                        String(hopCfg.stepSize)
-                    );
-                }
-
-                if (CHECK_NRF_SPI(nrfMode)) { initCW(hopCfg.startChannel); }
-
-                int ch = hopCfg.startChannel;
-                bool hopRedraw = true;
-
-                drawMainBorderWithTitle("CH HOPPER");
-
-                while (true) {
-                    if (check(EscPress)) break;
-
-                    if (hopRedraw) {
-                        int contentY = BORDER_PAD_Y + FM * LH + 4;
-                        int lineHop = max(14, tftHeight / 10);
-                        tft.setTextSize(FP);
-
-                        tft.fillRect(7, contentY, tftWidth - 14, lineHop, bruceConfig.bgColor);
-                        tft.setTextColor(TFT_GREEN, bruceConfig.bgColor);
-                        char hBuf[40];
-                        snprintf(
-                            hBuf,
-                            sizeof(hBuf),
-                            "Range: %d - %d  Step: %d",
-                            hopCfg.startChannel,
-                            hopCfg.stopChannel,
-                            hopCfg.stepSize
-                        );
-                        tft.drawCentreString(hBuf, tftWidth / 2, contentY, 1);
-                        contentY += lineHop;
-
-                        tft.fillRect(7, contentY, tftWidth - 14, lineHop, bruceConfig.bgColor);
-                        tft.setTextColor(TFT_YELLOW, bruceConfig.bgColor);
-                        int freq = 2400 + ch;
-                        snprintf(hBuf, sizeof(hBuf), "CH: %d  (%d MHz)", ch, freq);
-                        tft.drawCentreString(hBuf, tftWidth / 2, contentY, 1);
-
-                        int footerY = tftHeight - BORDER_PAD_X - FP * LH - 2;
-                        tft.fillRect(7, footerY, tftWidth - 14, FP * LH, bruceConfig.bgColor);
-                        tft.setTextColor(TFT_DARKGREY, bruceConfig.bgColor);
-                        tft.drawCentreString("[ESC] Stop", tftWidth / 2, footerY, 1);
-
-                        hopRedraw = false;
-                    }
-
-                    if (CHECK_NRF_SPI(nrfMode)) { cwChannel(ch, 0); }
-
-                    ch += hopCfg.stepSize;
-                    if (ch > hopCfg.stopChannel) {
-                        ch = hopCfg.startChannel;
-                        hopRedraw = true; // Update display on wrap
-                    }
-                }
-
-                if (CHECK_NRF_SPI(nrfMode)) {
-                    NRFradio.stopConstCarrier();
-                    NRFradio.powerDown();
-                }
-                if (CHECK_NRF_UART(nrfMode) || CHECK_NRF_BOTH(nrfMode)) { NRFSerial.println("OFF"); }
-                return;
-            } else if (menuIndex == 4) {
-                return;
-            } else {
-                editMode = !editMode;
-            }
-            redraw = true;
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-        }
-
-        delay(50);
-    }
-}
+            if (CHECK_NRF_UART(mode) || CHECK_NRF_BOTH(mode)) { NRFSerial.println("CH_" + String(channel));
