@@ -26,6 +26,25 @@ void nrf_info() {
     while (!check(AnyKeyPress));
 }
 
+// Fungsi baru untuk nonaktifkan device lain di SPI bus
+static void disableOtherSPIDevices() {
+    // Matikan CC1101 jika ada
+    if (bruceConfigPins.CC1101_bus.cs != GPIO_NUM_NC) {
+        pinMode(bruceConfigPins.CC1101_bus.cs, OUTPUT);
+        digitalWrite(bruceConfigPins.CC1101_bus.cs, HIGH);
+    }
+    // Matikan W5500 jika ada
+    if (bruceConfigPins.W5500_bus.cs != GPIO_NUM_NC) {
+        pinMode(bruceConfigPins.W5500_bus.cs, OUTPUT);
+        digitalWrite(bruceConfigPins.W5500_bus.cs, HIGH);
+    }
+    // Matikan SD Card jika ada
+    if (bruceConfigPins.SDCARD_bus.cs != GPIO_NUM_NC) {
+        pinMode(bruceConfigPins.SDCARD_bus.cs, OUTPUT);
+        digitalWrite(bruceConfigPins.SDCARD_bus.cs, HIGH);
+    }
+}
+
 bool nrf_start(NRF24_MODE mode) {
     bool result = false;
     if (mode == NRF_MODE_DISABLED) return false;
@@ -41,32 +60,33 @@ bool nrf_start(NRF24_MODE mode) {
     };
 
     if (!CHECK_NRF_SPI(mode)) return result;
+    
+    // MATIKAN DEVICE LAIN DI SPI BUS
+    disableOtherSPIDevices();
+    
     pinMode(bruceConfigPins.NRF24_bus.cs, OUTPUT);
     digitalWrite(bruceConfigPins.NRF24_bus.cs, HIGH);
     pinMode(bruceConfigPins.NRF24_bus.io0, OUTPUT);
     digitalWrite(bruceConfigPins.NRF24_bus.io0, LOW);
 
+    // PILIH SPI BUS YANG TEPAT
     if (bruceConfigPins.NRF24_bus.mosi == (gpio_num_t)TFT_MOSI &&
-        bruceConfigPins.NRF24_bus.mosi != GPIO_NUM_NC) { // (T_EMBED), CORE2 and others
-#if TFT_MOSI > 0 // condition for Headless and 8bit displays (no SPI bus)
+        bruceConfigPins.NRF24_bus.mosi != GPIO_NUM_NC) {
+#if TFT_MOSI > 0
         NRFSPI = &tft.getSPIinstance();
 #else
         NRFSPI = &SPI;
 #endif
-
     } else if (bruceConfigPins.NRF24_bus.mosi == bruceConfigPins.SDCARD_bus.mosi) {
-        // CC1101 shares SPI with SDCard (Cardputer and CYDs)
-
         NRFSPI = &sdcardSPI;
     } else if (bruceConfigPins.NRF24_bus.mosi == bruceConfigPins.CC1101_bus.mosi &&
                bruceConfigPins.NRF24_bus.mosi != bruceConfigPins.SDCARD_bus.mosi) {
-        // Smoochie board shares CC1101 and NRF24 SPI bus with different CS pins at
-        // the same time, different from StickCs that uses the same Bus, but one at a
-        // time (same CS Pin)
         NRFSPI = &CC_NRF_SPI;
     } else {
         NRFSPI = &SPI;
     }
+    
+    // INISIALISASI SPI
     NRFSPI->begin(
         (int8_t)bruceConfigPins.NRF24_bus.sck,
         (int8_t)bruceConfigPins.NRF24_bus.miso,
@@ -74,13 +94,31 @@ bool nrf_start(NRF24_MODE mode) {
     );
     delay(10);
 
+    // POWER CYCLE NRF24 - SANGAT PENTING!
+    digitalWrite(bruceConfigPins.NRF24_bus.io0, HIGH);
+    delay(10);
+    digitalWrite(bruceConfigPins.NRF24_bus.io0, LOW);
+    delay(10);
+
+    // INISIALISASI RADIO
     if (NRFradio.begin(
             NRFSPI,
             rf24_gpio_pin_t(bruceConfigPins.NRF24_bus.io0),
             rf24_gpio_pin_t(bruceConfigPins.NRF24_bus.cs)
         )) {
         result = true;
+        
+        // KONFIGURASI DASAR UNTUK JAMMING
+        NRFradio.setPALevel(RF24_PA_MAX);
+        NRFradio.setDataRate(RF24_2MBPS);
+        NRFradio.setAutoAck(false);
+        NRFradio.disableCRC();
+        NRFradio.setRetries(0, 0);
+        NRFradio.stopListening();
+        
+        Serial.println("NRF24 initialized successfully for jamming");
     } else {
+        Serial.println("NRF24 begin FAILED!");
         return false;
     }
     return result;
