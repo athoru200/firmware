@@ -5,6 +5,10 @@ RF24 NRFradio(bruceConfigPins.NRF24_bus.io0, bruceConfigPins.NRF24_bus.cs);
 HardwareSerial NRFSerial = HardwareSerial(2); // Uses UART2 for External NRF's
 SPIClass *NRFSPI;
 
+// Current radio settings
+static uint8_t currentPALevel = 3; // MAX
+static uint8_t currentDataRate = 1; // 2Mbps
+
 void nrf_info() {
     tft.fillScreen(bruceConfig.bgColor);
     tft.setTextSize(FM);
@@ -67,7 +71,12 @@ bool nrf_start(NRF24_MODE mode) {
     pinMode(bruceConfigPins.NRF24_bus.cs, OUTPUT);
     digitalWrite(bruceConfigPins.NRF24_bus.cs, HIGH);
     pinMode(bruceConfigPins.NRF24_bus.io0, OUTPUT);
+    
+    // POWER CYCLE YANG BENAR UNTUK MODUL PA+LNA
     digitalWrite(bruceConfigPins.NRF24_bus.io0, LOW);
+    delay(10);
+    digitalWrite(bruceConfigPins.NRF24_bus.io0, HIGH);
+    delay(100); // Lebih lama untuk discharge kapasitor
 
     // PILIH SPI BUS YANG TEPAT
     if (bruceConfigPins.NRF24_bus.mosi == (gpio_num_t)TFT_MOSI &&
@@ -94,12 +103,6 @@ bool nrf_start(NRF24_MODE mode) {
     );
     delay(10);
 
-    // POWER CYCLE NRF24 - SANGAT PENTING!
-    digitalWrite(bruceConfigPins.NRF24_bus.io0, HIGH);
-    delay(10);
-    digitalWrite(bruceConfigPins.NRF24_bus.io0, LOW);
-    delay(10);
-
     // INISIALISASI RADIO
     if (NRFradio.begin(
             NRFSPI,
@@ -109,12 +112,19 @@ bool nrf_start(NRF24_MODE mode) {
         result = true;
         
         // KONFIGURASI DASAR UNTUK JAMMING
-        NRFradio.setPALevel(RF24_PA_MAX);
-        NRFradio.setDataRate(RF24_2MBPS);
+        rf24_pa_dbm_e paLevels[] = {RF24_PA_MIN, RF24_PA_LOW, RF24_PA_HIGH, RF24_PA_MAX};
+        rf24_datarate_e dataRates[] = {RF24_1MBPS, RF24_2MBPS, RF24_250KBPS};
+        
+        NRFradio.setPALevel(paLevels[currentPALevel]);
+        NRFradio.setDataRate(dataRates[currentDataRate]);
         NRFradio.setAutoAck(false);
         NRFradio.disableCRC();
         NRFradio.setRetries(0, 0);
         NRFradio.stopListening();
+        
+        // Flush buffers
+        NRFradio.flush_tx();
+        NRFradio.flush_rx();
         
         Serial.println("NRF24 initialized successfully for jamming");
     } else {
@@ -134,4 +144,32 @@ NRF24_MODE nrf_setMode() {
     };
     loopOptions(options);
     return mode;
+}
+
+// Fungsi untuk mengatur PA Level
+void nrf_set_pa_level(uint8_t level) {
+    if (level > 3) level = 3;
+    currentPALevel = level;
+    rf24_pa_dbm_e paLevels[] = {RF24_PA_MIN, RF24_PA_LOW, RF24_PA_HIGH, RF24_PA_MAX};
+    NRFradio.setPALevel(paLevels[level]);
+    Serial.printf("PA Level set to: %d\n", level);
+}
+
+// Fungsi untuk mengatur Data Rate
+void nrf_set_data_rate(uint8_t rate) {
+    if (rate > 2) rate = 1;
+    currentDataRate = rate;
+    rf24_datarate_e dataRates[] = {RF24_1MBPS, RF24_2MBPS, RF24_250KBPS};
+    NRFradio.setDataRate(dataRates[rate]);
+    Serial.printf("Data Rate set to: %d\n", rate);
+}
+
+// Fungsi untuk mendapatkan PA Level saat ini
+uint8_t nrf_get_pa_level() {
+    return currentPALevel;
+}
+
+// Fungsi untuk mendapatkan Data Rate saat ini
+uint8_t nrf_get_data_rate() {
+    return currentDataRate;
 }
