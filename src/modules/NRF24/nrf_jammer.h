@@ -18,9 +18,6 @@
 #define __NRF_JAMMER_H
 
 #include "modules/NRF24/nrf_common.h"
-#include "nrf_pin_config.h"  // <-- TAMBAHKAN BARIS INI
-
-// ... (sisa file tetap sama)
 
 // ── Jamming Mode Presets ────────────────────────────────────────
 // Cycleable preset modes only. CH Jammer and CH Hopper are
@@ -70,5 +67,11 @@ void nrf_channel_jammer();
 
 /// Direct entry to custom channel hopper
 void nrf_channel_hopper();
+
+/// New: BLE Advertising jammer (focused on channels 37,38,39)
+void nrf_ble_adv_jammer();
+
+/// New: NRF24 configuration menu (PA level, data rate)
+void nrf_config_menu();
 
 #endif // __NRF_JAMMER_H
